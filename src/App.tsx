@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
   type ReactElement,
 } from 'react'
@@ -50,6 +51,68 @@ const openExternal = (url: string): void => {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+const isValidLauncherData = (value: unknown): value is LauncherData => {
+  if (typeof value !== 'object' || value === null) {
+    return false
+  }
+
+  const parsed = value as { folders?: unknown; links?: unknown }
+
+  if (!Array.isArray(parsed.folders) || !Array.isArray(parsed.links)) {
+    return false
+  }
+
+  const foldersValid = parsed.folders.every((folder) => {
+    if (typeof folder !== 'object' || folder === null) {
+      return false
+    }
+
+    const candidate = folder as {
+      id?: unknown
+      name?: unknown
+      parentId?: unknown
+      createdAt?: unknown
+    }
+
+    return (
+      typeof candidate.id === 'string' &&
+      typeof candidate.name === 'string' &&
+      typeof candidate.createdAt === 'number' &&
+      (typeof candidate.parentId === 'string' || typeof candidate.parentId === 'undefined')
+    )
+  })
+
+  const linksValid = parsed.links.every((link) => {
+    if (typeof link !== 'object' || link === null) {
+      return false
+    }
+
+    const candidate = link as {
+      id?: unknown
+      title?: unknown
+      url?: unknown
+      folderId?: unknown
+      description?: unknown
+      badge?: unknown
+      favorite?: unknown
+      createdAt?: unknown
+    }
+
+    return (
+      typeof candidate.id === 'string' &&
+      typeof candidate.title === 'string' &&
+      typeof candidate.url === 'string' &&
+      typeof candidate.folderId === 'string' &&
+      (typeof candidate.description === 'string' || typeof candidate.description === 'undefined') &&
+      (typeof candidate.badge === 'string' || typeof candidate.badge === 'undefined') &&
+      typeof candidate.favorite === 'boolean' &&
+      typeof candidate.createdAt === 'number'
+    )
+  })
+
+  return foldersValid && linksValid
+}
+
 function App() {
   const [launcher, setLauncher] = useState<LauncherData>(() => loadLauncherData())
   const [query, setQuery] = useState('')
@@ -71,6 +134,7 @@ function App() {
   const [editFolderId, setEditFolderId] = useState('')
 
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const importInputRef = useRef<HTMLInputElement>(null)
   const debouncedQuery = useDebouncedValue(query, 300)
 
   useEffect(() => {
@@ -348,12 +412,82 @@ function App() {
     })
   }
 
+  const exportAsJson = (): void => {
+    const fileName = `quickspace-export-${new Date().toISOString().slice(0, 10)}.json`
+    const content = JSON.stringify(launcher, null, 2)
+    const blob = new Blob([content], { type: 'application/json' })
+    const objectUrl = URL.createObjectURL(blob)
+
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = fileName
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+
+    URL.revokeObjectURL(objectUrl)
+  }
+
+  const triggerImport = (): void => {
+    importInputRef.current?.click()
+  }
+
+  const importFromJson = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    try {
+      const raw = await file.text()
+      const parsed = JSON.parse(raw) as unknown
+
+      if (!isValidLauncherData(parsed)) {
+        alert('Invalid JSON format for QuickSpace import.')
+        return
+      }
+
+      setLauncher(parsed)
+      setActiveFolder('all')
+      setNewLinkFolderId(parsed.folders[0]?.id ?? '')
+      alert('Import completed successfully.')
+    } catch {
+      alert('Failed to import JSON file.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen w-full max-w-[1240px] flex-col gap-4 p-4 md:p-6 lg:flex-row lg:gap-6">
         <aside className="w-full rounded-2xl border border-slate-800 bg-slate-900/75 p-4 lg:w-96">
           <h1 className="text-xl font-semibold">QuickSpace</h1>
           <p className="mt-1 text-sm text-slate-400">Folders and links, like your Chrome bookmarks.</p>
+
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <button
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500"
+              onClick={exportAsJson}
+              type="button"
+            >
+              Export JSON
+            </button>
+            <button
+              className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-200 transition hover:border-slate-500"
+              onClick={triggerImport}
+              type="button"
+            >
+              Import JSON
+            </button>
+          </div>
+          <input
+            accept="application/json,.json"
+            className="hidden"
+            onChange={importFromJson}
+            ref={importInputRef}
+            type="file"
+          />
 
           <div className="mt-6 space-y-2">
             <button
