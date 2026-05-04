@@ -1,44 +1,17 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ChangeEvent,
-  type FormEvent,
-  type ReactElement,
-} from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { Download, Plus, Search, Star, Upload } from "lucide-react";
+import { EditLinkForm } from "./components/EditLinkForm";
+import { FolderSidebar } from "./components/FolderSidebar";
+import { LinkCard } from "./components/LinkCard";
 import { useDebouncedValue } from "./hooks/useDebouncedValue";
+import { useKeyboardShortcut } from "./hooks/useKeyboardShortcut";
+import { useLauncherTree } from "./hooks/useLauncherTree";
 import { loadLauncherData, saveLauncherData } from "./storage/linkStorage";
 import type { Folder, LauncherData, LinkItem } from "./types/link";
 
-const normalize = (text: string): string => text.trim().toLowerCase();
-
-const getHostname = (url: string): string => {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url;
-  }
-};
-
-const getFaviconUrl = (url: string): string => {
-  const hostname = getHostname(url);
-  return `https://www.google.com/s2/favicons?domain=${hostname}&sz=64`;
-};
-
-const createId = (): string => {
-  if (
-    typeof crypto !== "undefined" &&
-    typeof crypto.randomUUID === "function"
-  ) {
-    return crypto.randomUUID();
-  }
-
-  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-};
-
 const normalizeUrl = (url: string): string => {
   const cleaned = url.trim();
+
   if (!cleaned) {
     return cleaned;
   }
@@ -50,8 +23,12 @@ const normalizeUrl = (url: string): string => {
   return `https://${cleaned}`;
 };
 
-const openExternal = (url: string): void => {
-  window.open(url, "_blank", "noopener,noreferrer");
+const createId = (): string => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 };
 
 const isValidLauncherData = (value: unknown): value is LauncherData => {
@@ -60,72 +37,15 @@ const isValidLauncherData = (value: unknown): value is LauncherData => {
   }
 
   const parsed = value as { folders?: unknown; links?: unknown };
-
-  if (!Array.isArray(parsed.folders) || !Array.isArray(parsed.links)) {
-    return false;
-  }
-
-  const foldersValid = parsed.folders.every((folder) => {
-    if (typeof folder !== "object" || folder === null) {
-      return false;
-    }
-
-    const candidate = folder as {
-      id?: unknown;
-      name?: unknown;
-      parentId?: unknown;
-      createdAt?: unknown;
-    };
-
-    return (
-      typeof candidate.id === "string" &&
-      typeof candidate.name === "string" &&
-      typeof candidate.createdAt === "number" &&
-      (typeof candidate.parentId === "string" ||
-        typeof candidate.parentId === "undefined")
-    );
-  });
-
-  const linksValid = parsed.links.every((link) => {
-    if (typeof link !== "object" || link === null) {
-      return false;
-    }
-
-    const candidate = link as {
-      id?: unknown;
-      title?: unknown;
-      url?: unknown;
-      folderId?: unknown;
-      description?: unknown;
-      badge?: unknown;
-      favorite?: unknown;
-      createdAt?: unknown;
-    };
-
-    return (
-      typeof candidate.id === "string" &&
-      typeof candidate.title === "string" &&
-      typeof candidate.url === "string" &&
-      typeof candidate.folderId === "string" &&
-      (typeof candidate.description === "string" ||
-        typeof candidate.description === "undefined") &&
-      (typeof candidate.badge === "string" ||
-        typeof candidate.badge === "undefined") &&
-      typeof candidate.favorite === "boolean" &&
-      typeof candidate.createdAt === "number"
-    );
-  });
-
-  return foldersValid && linksValid;
+  return Array.isArray(parsed.folders) && Array.isArray(parsed.links);
 };
 
 function App() {
-  const [launcher, setLauncher] = useState<LauncherData>(() =>
-    loadLauncherData(),
-  );
+  const [launcher, setLauncher] = useState<LauncherData>(() => loadLauncherData());
   const [query, setQuery] = useState("");
   const [activeFolder, setActiveFolder] = useState<string>("all");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [addPanelOpen, setAddPanelOpen] = useState(false);
 
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderParentId, setNewFolderParentId] = useState("");
@@ -133,9 +53,7 @@ function App() {
   const [newLinkTitle, setNewLinkTitle] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
   const [newLinkBadge, setNewLinkBadge] = useState("");
-  const [newLinkFolderId, setNewLinkFolderId] = useState(
-    launcher.folders[0]?.id ?? "",
-  );
+  const [newLinkFolderId, setNewLinkFolderId] = useState(launcher.folders[0]?.id ?? "");
 
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editFolderName, setEditFolderName] = useState("");
@@ -151,148 +69,24 @@ function App() {
   const importInputRef = useRef<HTMLInputElement>(null);
   const debouncedQuery = useDebouncedValue(query, 300);
 
+  useKeyboardShortcut("k", () => {
+    searchInputRef.current?.focus();
+    searchInputRef.current?.select();
+  });
+
   useEffect(() => {
     saveLauncherData(launcher);
   }, [launcher]);
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-        searchInputRef.current?.select();
-      }
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
-
-  const links = launcher.links;
-  const folders = launcher.folders;
-
-  const folderMap = useMemo(
-    () => new Map(folders.map((folder) => [folder.id, folder])),
-    [folders],
-  );
-
-  const folderChildrenMap = useMemo(() => {
-    const children = new Map<string | undefined, Folder[]>();
-
-    folders.forEach((folder) => {
-      const key = folder.parentId;
-      const list = children.get(key) ?? [];
-      list.push(folder);
-      children.set(key, list);
-    });
-
-    children.forEach((list) => {
-      list.sort((a, b) => a.name.localeCompare(b.name));
-    });
-
-    return children;
-  }, [folders]);
-
-  const folderOptions = useMemo(() => {
-    const options: Array<{ id: string; label: string }> = [];
-
-    const walk = (parentId: string | undefined, depth: number): void => {
-      const children = folderChildrenMap.get(parentId) ?? [];
-      children.forEach((folder) => {
-        options.push({
-          id: folder.id,
-          label: `${"  ".repeat(depth)}${folder.name}`,
-        });
-        walk(folder.id, depth + 1);
-      });
-    };
-
-    walk(undefined, 0);
-    return options;
-  }, [folderChildrenMap]);
-
-  const linksByFolder = useMemo(() => {
-    const counts: Record<string, number> = {};
-
-    links.forEach((link) => {
-      counts[link.folderId] = (counts[link.folderId] ?? 0) + 1;
-    });
-
-    return counts;
-  }, [links]);
-
-  const folderPathById = useMemo(() => {
-    const pathMap = new Map<string, string>();
-
-    const getPath = (folderId: string): string => {
-      const existing = pathMap.get(folderId);
-      if (existing) {
-        return existing;
-      }
-
-      const folder = folderMap.get(folderId);
-      if (!folder) {
-        return "Unknown";
-      }
-
-      const path = folder.parentId
-        ? `${getPath(folder.parentId)} / ${folder.name}`
-        : folder.name;
-      pathMap.set(folderId, path);
-      return path;
-    };
-
-    folders.forEach((folder) => {
-      getPath(folder.id);
-    });
-
-    return pathMap;
-  }, [folderMap, folders]);
-
-  const activeFolderSet = useMemo(() => {
-    if (activeFolder === "all") {
-      return null;
-    }
-
-    const ids = new Set<string>();
-
-    const walk = (folderId: string): void => {
-      ids.add(folderId);
-      const children = folderChildrenMap.get(folderId) ?? [];
-      children.forEach((folder) => walk(folder.id));
-    };
-
-    walk(activeFolder);
-    return ids;
-  }, [activeFolder, folderChildrenMap]);
-
-  const filteredLinks = useMemo(() => {
-    const normalizedQuery = normalize(debouncedQuery);
-
-    return links
-      .filter((link) => {
-        const searchableText = normalize(
-          `${link.title} ${link.badge ?? ""} ${link.url} ${link.description ?? ""}`,
-        );
-
-        const folderMatch = activeFolderSet
-          ? activeFolderSet.has(link.folderId)
-          : true;
-        const favoriteMatch = favoritesOnly ? link.favorite : true;
-        const searchMatch =
-          normalizedQuery.length === 0 ||
-          searchableText.includes(normalizedQuery);
-
-        return folderMatch && favoriteMatch && searchMatch;
-      })
-      .sort(
-        (a, b) =>
-          Number(b.favorite) - Number(a.favorite) ||
-          a.title.localeCompare(b.title),
-      );
-  }, [activeFolderSet, debouncedQuery, favoritesOnly, links]);
-
-  const showLinkScroll = filteredLinks.length > 12;
+  const {
+    folderMap,
+    folderChildrenMap,
+    folderOptions,
+    folderPathById,
+    linksByFolder,
+    filteredLinks,
+    activeFolderName,
+  } = useLauncherTree(launcher, debouncedQuery, activeFolder, favoritesOnly);
 
   const addFolder = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -302,12 +96,10 @@ function App() {
       return;
     }
 
-    const parentId = newFolderParentId || undefined;
-
     const folder: Folder = {
       id: createId(),
       name,
-      parentId,
+      parentId: newFolderParentId || undefined,
       createdAt: Date.now(),
     };
 
@@ -328,6 +120,10 @@ function App() {
     setEditFolderParentId(folder.parentId ?? "");
   };
 
+  const cancelEditFolder = (): void => {
+    setEditingFolderId(null);
+  };
+
   const saveEditedFolder = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
 
@@ -345,8 +141,7 @@ function App() {
 
     const collectDescendants = (folderId: string): void => {
       descendantIds.add(folderId);
-      const children = folderChildrenMap.get(folderId) ?? [];
-      children.forEach((child) => collectDescendants(child.id));
+      (folderChildrenMap.get(folderId) ?? []).forEach((child) => collectDescendants(child.id));
     };
 
     collectDescendants(editingFolderId);
@@ -360,11 +155,7 @@ function App() {
       ...current,
       folders: current.folders.map((folder) =>
         folder.id === editingFolderId
-          ? {
-              ...folder,
-              name,
-              parentId: candidateParentId,
-            }
+          ? { ...folder, name, parentId: candidateParentId }
           : folder,
       ),
     }));
@@ -372,8 +163,37 @@ function App() {
     setEditingFolderId(null);
   };
 
-  const cancelEditFolder = (): void => {
-    setEditingFolderId(null);
+  const deleteFolder = (folderId: string): void => {
+    const allIds = new Set<string>();
+
+    const collect = (id: string): void => {
+      allIds.add(id);
+      (folderChildrenMap.get(id) ?? []).forEach((child) => collect(child.id));
+    };
+
+    collect(folderId);
+
+    const folderName = folderMap.get(folderId)?.name ?? "this folder";
+    const subfolderCount = allIds.size - 1;
+    const affectedLinks = launcher.links.filter((link) => allIds.has(link.folderId)).length;
+
+    const confirmMessage =
+      affectedLinks > 0
+        ? `Delete "${folderName}"${subfolderCount > 0 ? ` and ${subfolderCount} subfolder(s)` : ""}? This will also remove ${affectedLinks} link(s) inside. This cannot be undone.`
+        : `Delete "${folderName}"${subfolderCount > 0 ? ` and ${subfolderCount} subfolder(s)` : ""}? This cannot be undone.`;
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    setLauncher((current) => ({
+      folders: current.folders.filter((folder) => !allIds.has(folder.id)),
+      links: current.links.filter((link) => !allIds.has(link.folderId)),
+    }));
+
+    if (activeFolder === folderId || allIds.has(activeFolder)) {
+      setActiveFolder("all");
+    }
   };
 
   const addLink = (event: FormEvent<HTMLFormElement>): void => {
@@ -404,6 +224,7 @@ function App() {
     setNewLinkTitle("");
     setNewLinkUrl("");
     setNewLinkBadge("");
+    setAddPanelOpen(false);
     setActiveFolder(newLinkFolderId);
   };
 
@@ -463,59 +284,18 @@ function App() {
     setEditingLinkId(null);
   };
 
-  const renderFolderTree = (
-    parentId: string | undefined,
-    depth: number,
-  ): ReactElement[] => {
-    const children = folderChildrenMap.get(parentId) ?? [];
-
-    return children.flatMap((folder) => {
-      const item = (
-        <div key={folder.id} className="space-y-1">
-          <div className="flex items-center gap-2" style={{ marginLeft: depth * 10 }}>
-          <button
-            className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-              activeFolder === folder.id
-                ? "border-blue-400 bg-blue-500/15 text-blue-100"
-                : "border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500"
-            }`}
-            onClick={() => setActiveFolder(folder.id)}
-            type="button"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate">{folder.name}</span>
-              <span className="text-xs text-slate-400">
-                {linksByFolder[folder.id] ?? 0}
-              </span>
-            </div>
-          </button>
-          <button
-            className="shrink-0 rounded-md border border-slate-700 px-2.5 py-2 text-xs text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
-            onClick={() => startEditFolder(folder)}
-            type="button"
-          >
-            Edit
-          </button>
-          </div>
-        </div>
-      );
-
-      return [item, ...renderFolderTree(folder.id, depth + 1)];
-    });
-  };
-
   const exportAsJson = (): void => {
     const fileName = `quickspace-export-${new Date().toISOString().slice(0, 10)}.json`;
     const content = JSON.stringify(launcher, null, 2);
     const blob = new Blob([content], { type: "application/json" });
     const objectUrl = URL.createObjectURL(blob);
 
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
 
     URL.revokeObjectURL(objectUrl);
   };
@@ -524,10 +304,9 @@ function App() {
     importInputRef.current?.click();
   };
 
-  const importFromJson = async (
-    event: ChangeEvent<HTMLInputElement>,
-  ): Promise<void> => {
+  const importFromJson = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
     const file = event.target.files?.[0];
+
     if (!file) {
       return;
     }
@@ -553,372 +332,222 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-[1240px] flex-col gap-4 p-4 md:p-6 lg:flex-row lg:gap-6">
-        <aside className="w-full p-4 border rounded-2xl border-slate-800 bg-slate-900/75 lg:w-96">
-          <h1 className="text-xl font-semibold">QuickSpace</h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Folders and links, like your Chrome bookmarks.
-          </p>
+    <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
+      <header className="sticky top-0 z-20 flex flex-col gap-3 border-b border-slate-800 bg-slate-950/90 px-4 py-3 backdrop-blur-md lg:flex-row lg:items-center">
+        <div className="flex items-center gap-3">
+          <h1 className="text-sm font-semibold tracking-tight text-slate-100">QuickSpace</h1>
+          <span className="text-xs text-slate-500">
+            {filteredLinks.length} link{filteredLinks.length !== 1 ? "s" : ""}
+            {activeFolder !== "all" && ` in ${activeFolderName}`}
+          </span>
+        </div>
 
-          <div className="grid grid-cols-2 gap-2 mt-4">
-            <button
-              className="px-3 py-2 text-sm transition border rounded-lg border-slate-700 bg-slate-800 text-slate-200 hover:border-slate-500"
-              onClick={exportAsJson}
-              type="button"
-            >
-              Export JSON
-            </button>
-            <button
-              className="px-3 py-2 text-sm transition border rounded-lg border-slate-700 bg-slate-800 text-slate-200 hover:border-slate-500"
-              onClick={triggerImport}
-              type="button"
-            >
-              Import JSON
-            </button>
-          </div>
+        <label className="relative w-full max-w-xl lg:mx-auto">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
           <input
+            ref={searchInputRef}
+            type="text"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && filteredLinks.length > 0) {
+                event.preventDefault();
+                window.open(filteredLinks[0].url, "_blank", "noopener,noreferrer");
+              }
+            }}
+            placeholder="Search title, badge, or URL..."
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 pl-9 pr-14 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500"
+          />
+          <kbd className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-600">
+            Ctrl + K
+          </kbd>
+        </label>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFavoritesOnly((current) => !current)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs transition ${
+              favoritesOnly
+                ? "border-amber-500/50 bg-amber-500/10 text-amber-300"
+                : "border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-600 hover:text-slate-200"
+            }`}
+          >
+            <Star className="h-3.5 w-3.5" />
+            Starred
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAddPanelOpen((current) => !current)}
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition ${
+              addPanelOpen
+                ? "border-blue-500/50 bg-blue-500/15 text-blue-300"
+                : "border-slate-700 bg-blue-600 text-white hover:bg-blue-500"
+            }`}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Add link
+          </button>
+
+          <button
+            type="button"
+            onClick={exportAsJson}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export
+          </button>
+
+          <button
+            type="button"
+            onClick={triggerImport}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-400 transition hover:border-slate-600 hover:text-slate-200"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Import
+          </button>
+
+          <input
+            ref={importInputRef}
+            type="file"
             accept="application/json,.json"
             className="hidden"
             onChange={importFromJson}
-            ref={importInputRef}
-            type="file"
           />
+        </div>
+      </header>
 
-          <div className="mt-6 space-y-2">
-            <button
-              className={`w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                activeFolder === "all"
-                  ? "border-blue-400 bg-blue-500/15 text-blue-100"
-                  : "border-slate-700 bg-slate-800/60 text-slate-200 hover:border-slate-500"
-              }`}
-              onClick={() => setActiveFolder("all")}
-              type="button"
-            >
-              All Links ({links.length})
-            </button>
-
-            {renderFolderTree(undefined, 0)}
-          </div>
-
-          <form
-            className="pt-4 mt-6 space-y-2 border-t border-slate-800"
-            onSubmit={addFolder}
-          >
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-400">
-              Add Folder
-            </label>
-            <input
-              className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-              onChange={(event) => setNewFolderName(event.target.value)}
-              placeholder="Folder name"
-              type="text"
-              value={newFolderName}
-            />
-            <select
-              className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-              onChange={(event) => setNewFolderParentId(event.target.value)}
-              value={newFolderParentId}
-            >
-              <option value="">Top level</option>
-              {folderOptions.map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {folder.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="w-full px-3 py-2 text-sm font-medium text-white bg-blue-500 rounded-lg hover:bg-blue-400"
-              type="submit"
-            >
-              Add Folder
-            </button>
-          </form>
-
-          {editingFolderId && (
-            <form
-              className="pt-4 mt-4 space-y-2 border-t border-slate-800"
-              onSubmit={saveEditedFolder}
-            >
-              <label className="text-xs uppercase tracking-[0.18em] text-slate-400">
-                Edit Folder
-              </label>
+      {addPanelOpen && (
+        <div className="border-b border-slate-800 bg-slate-900/80 px-4 py-4">
+          <form className="mx-auto max-w-4xl space-y-3" onSubmit={addLink}>
+            <p className="text-xs font-medium uppercase tracking-wider text-slate-400">New link</p>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
               <input
-                className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-                onChange={(event) => setEditFolderName(event.target.value)}
-                placeholder="Folder name"
+                autoFocus
+                value={newLinkTitle}
+                onChange={(event) => setNewLinkTitle(event.target.value)}
+                placeholder="Title"
                 type="text"
-                value={editFolderName}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500"
+              />
+              <input
+                value={newLinkUrl}
+                onChange={(event) => setNewLinkUrl(event.target.value)}
+                placeholder="https://example.com"
+                type="text"
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500"
+              />
+              <input
+                value={newLinkBadge}
+                onChange={(event) => setNewLinkBadge(event.target.value)}
+                placeholder="Badge (optional)"
+                type="text"
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500 focus:border-blue-500"
               />
               <select
-                className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-                onChange={(event) => setEditFolderParentId(event.target.value)}
-                value={editFolderParentId}
+                value={newLinkFolderId}
+                onChange={(event) => setNewLinkFolderId(event.target.value)}
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-500"
               >
-                <option value="">Top level</option>
-                {folderOptions
-                  .filter((option) => option.id !== editingFolderId)
-                  .map((folder) => (
-                    <option key={folder.id} value={folder.id}>
-                      {folder.label}
-                    </option>
-                  ))}
+                {folderOptions.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.label}
+                  </option>
+                ))}
               </select>
-              <div className="flex gap-2">
-                <button
-                  className="flex-1 px-3 py-2 text-sm font-medium text-white rounded-lg bg-emerald-500 hover:bg-emerald-400"
-                  type="submit"
-                >
-                  Save Folder
-                </button>
-                <button
-                  className="px-3 py-2 text-sm border rounded-lg border-slate-700 text-slate-300 hover:border-slate-500"
-                  onClick={cancelEditFolder}
-                  type="button"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          )}
-
-          <form className="mt-4 space-y-2" onSubmit={addLink}>
-            <label className="text-xs uppercase tracking-[0.18em] text-slate-400">
-              Add Link
-            </label>
-            <input
-              className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-              onChange={(event) => setNewLinkTitle(event.target.value)}
-              placeholder="Title"
-              type="text"
-              value={newLinkTitle}
-            />
-            <input
-              className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-              onChange={(event) => setNewLinkUrl(event.target.value)}
-              placeholder="https://example.com"
-              type="text"
-              value={newLinkUrl}
-            />
-            <input
-              className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-              onChange={(event) => setNewLinkBadge(event.target.value)}
-              placeholder="Badge (e.g. Docs, AI, Tool)"
-              type="text"
-              value={newLinkBadge}
-            />
-            <select
-              className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-              onChange={(event) => setNewLinkFolderId(event.target.value)}
-              value={newLinkFolderId}
-            >
-              {folderOptions.map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {folder.label}
-                </option>
-              ))}
-            </select>
-            <button
-              className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-slate-100 text-slate-900 hover:bg-white"
-              type="submit"
-            >
-              Add Link
-            </button>
-          </form>
-        </aside>
-
-        <main className="flex-1 p-4 border rounded-2xl border-slate-800 bg-slate-900/60 md:p-5">
-          <div className="flex flex-col gap-3 pb-4 border-b border-slate-800 md:flex-row md:items-center md:justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">Your Links</h2>
-              <p className="text-sm text-slate-400">
-                Edit links, add badges, and launch quickly.
-              </p>
             </div>
-
-            <div className="flex flex-col w-full gap-2 md:w-auto md:flex-row">
-              <label className="relative block w-full md:w-[380px]">
-                <input
-                  className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-950 focus:border-blue-400"
-                  onChange={(event) => setQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && filteredLinks.length > 0) {
-                      event.preventDefault();
-                      openExternal(filteredLinks[0].url);
-                    }
-                  }}
-                  placeholder="Search title, badge, or URL..."
-                  ref={searchInputRef}
-                  type="text"
-                  value={query}
-                />
-                <span className="pointer-events-none absolute right-3 top-2.5 text-xs text-slate-500">
-                  Ctrl + K
-                </span>
-              </label>
-
+            <div className="flex gap-2">
+              <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500">
+                Add link
+              </button>
               <button
-                className={`rounded-lg border px-3 py-2 text-sm transition ${
-                  favoritesOnly
-                    ? "border-amber-400 bg-amber-500/15 text-amber-100"
-                    : "border-slate-700 bg-slate-800 text-slate-300 hover:border-slate-500"
-                }`}
-                onClick={() => setFavoritesOnly((current) => !current)}
                 type="button"
+                onClick={() => setAddPanelOpen(false)}
+                className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 transition hover:border-slate-500 hover:text-slate-200"
               >
-                Favorites only
+                Cancel
               </button>
             </div>
-          </div>
+          </form>
+        </div>
+      )}
 
-          <div
-            className={`mt-4 space-y-2 ${
-              showLinkScroll ? "max-h-[calc(12*5.75rem)] overflow-y-auto pr-1" : ""
-            }`}
-          >
-            {filteredLinks.length > 0 ? (
-              filteredLinks.map((link) => (
-                <article
-                  className="p-3 border rounded-xl border-slate-800 bg-slate-950/70"
-                  key={link.id}
-                >
-                  {editingLinkId === link.id ? (
-                    <form
-                      className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]"
-                      onSubmit={saveEditedLink}
-                    >
-                      <input
-                        className="px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-                        onChange={(event) => setEditTitle(event.target.value)}
-                        placeholder="Title"
-                        type="text"
-                        value={editTitle}
-                      />
-                      <input
-                        className="px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-                        onChange={(event) => setEditUrl(event.target.value)}
-                        placeholder="URL"
-                        type="text"
-                        value={editUrl}
-                      />
-                      <div className="flex gap-2">
-                        <input
-                          className="w-full px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-                          onChange={(event) => setEditBadge(event.target.value)}
-                          placeholder="Badge"
-                          type="text"
-                          value={editBadge}
-                        />
-                        <select
-                          className="px-3 py-2 text-sm border rounded-lg outline-none border-slate-700 bg-slate-900 focus:border-blue-400"
-                          onChange={(event) =>
-                            setEditFolderId(event.target.value)
-                          }
-                          value={editFolderId}
-                        >
-                          {folderOptions.map((folder) => (
-                            <option key={folder.id} value={folder.id}>
-                              {folder.label}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          className="px-3 py-2 text-sm font-medium text-white rounded-md bg-emerald-500 hover:bg-emerald-400"
-                          type="submit"
-                        >
-                          Save
-                        </button>
-                        <button
-                          className="px-3 py-2 text-sm border rounded-md border-slate-600 text-slate-300 hover:border-slate-400"
-                          onClick={() => setEditingLinkId(null)}
-                          type="button"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <img
-                            alt=""
-                            className="w-5 h-5 rounded shrink-0"
-                            loading="lazy"
-                            src={getFaviconUrl(link.url)}
-                          />
-                          <p className="text-base font-medium truncate text-slate-100">
-                            {link.title}
-                          </p>
-                          {link.badge && (
-                            <span className="rounded-full border border-sky-400/40 bg-sky-500/10 px-2 py-0.5 text-xs text-sky-200">
-                              {link.badge}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-sm truncate text-slate-400">
-                          {getHostname(link.url)}
-                        </p>
-                        <p className="text-xs truncate text-slate-500">
-                          {folderPathById.get(link.folderId) ??
-                            "Unknown folder"}
-                        </p>
-                      </div>
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <FolderSidebar
+          activeFolder={activeFolder}
+          setActiveFolder={setActiveFolder}
+          folderChildrenMap={folderChildrenMap}
+          folderOptions={folderOptions}
+          links={launcher.links}
+          linksByFolder={linksByFolder}
+          newFolderName={newFolderName}
+          setNewFolderName={setNewFolderName}
+          newFolderParentId={newFolderParentId}
+          setNewFolderParentId={setNewFolderParentId}
+          addFolder={addFolder}
+          editingFolderId={editingFolderId}
+          editFolderName={editFolderName}
+          setEditFolderName={setEditFolderName}
+          editFolderParentId={editFolderParentId}
+          setEditFolderParentId={setEditFolderParentId}
+          saveEditedFolder={saveEditedFolder}
+          cancelEditFolder={cancelEditFolder}
+          startEditFolder={startEditFolder}
+          deleteFolder={deleteFolder}
+        />
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          aria-label={
-                            link.favorite
-                              ? `Unfavorite ${link.title}`
-                              : `Favorite ${link.title}`
-                          }
-                          className={`rounded-md border px-2 py-1 text-sm transition ${
-                            link.favorite
-                              ? "border-amber-400 bg-amber-500/15 text-amber-200"
-                              : "border-slate-700 text-slate-400 hover:text-slate-100"
-                          }`}
-                          onClick={() => toggleFavorite(link.id)}
-                          type="button"
-                        >
-                          {link.favorite ? "Starred" : "Star"}
-                        </button>
-
-                        <button
-                          className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:border-slate-500"
-                          onClick={() => startEditLink(link)}
-                          type="button"
-                        >
-                          Edit
-                        </button>
-
-                        <button
-                          className="rounded-md bg-blue-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-400"
-                          onClick={() => openExternal(link.url)}
-                          type="button"
-                        >
-                          Open
-                        </button>
-
-                        <button
-                          className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-400 hover:border-rose-400 hover:text-rose-200"
-                          onClick={() => removeLink(link.id)}
-                          type="button"
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </article>
-              ))
-            ) : (
-              <p className="px-4 py-6 text-sm border rounded-xl border-slate-800 bg-slate-950/60 text-slate-400">
-                No links found for this filter.
-              </p>
-            )}
-          </div>
+        <main className="min-w-0 flex-1 overflow-y-auto p-4">
+          {filteredLinks.length > 0 ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+              {filteredLinks.map((link) =>
+                editingLinkId === link.id ? (
+                  <div key={link.id} className="col-span-full">
+                    <EditLinkForm
+                      link={link}
+                      folderOptions={folderOptions}
+                      editTitle={editTitle}
+                      editUrl={editUrl}
+                      editBadge={editBadge}
+                      editFolderId={editFolderId}
+                      setEditTitle={setEditTitle}
+                      setEditUrl={setEditUrl}
+                      setEditBadge={setEditBadge}
+                      setEditFolderId={setEditFolderId}
+                      onSave={saveEditedLink}
+                      onCancel={() => setEditingLinkId(null)}
+                    />
+                  </div>
+                ) : (
+                  <LinkCard
+                    key={link.id}
+                    link={link}
+                    folderPath={folderPathById.get(link.folderId) ?? "Unknown folder"}
+                    onFavorite={() => toggleFavorite(link.id)}
+                    onEdit={() => startEditLink(link)}
+                    onRemove={() => removeLink(link.id)}
+                  />
+                ),
+              )}
+            </div>
+          ) : (
+            <div className="flex h-64 flex-col items-center justify-center gap-3 text-center">
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-slate-700 bg-slate-800">
+                <Search className="h-5 w-5 text-slate-500" />
+              </div>
+              <div>
+                <p className="text-sm font-medium text-slate-400">No links found</p>
+                <p className="mt-1 text-xs text-slate-600">Try a different search or folder.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAddPanelOpen(true)}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white transition hover:bg-blue-500"
+              >
+                Add your first link
+              </button>
+            </div>
+          )}
         </main>
       </div>
     </div>
