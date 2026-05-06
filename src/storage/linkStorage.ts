@@ -40,6 +40,7 @@ const mergeLauncherData = (stored: LauncherData): LauncherData => {
       folder.parentId !== folder.id
         ? folder.parentId
         : undefined,
+    order: folder.order ?? folder.createdAt,
   }));
   const folderIds = new Set(folders.map((folder) => folder.id));
 
@@ -48,7 +49,14 @@ const mergeLauncherData = (stored: LauncherData): LauncherData => {
     folderId: folderIds.has(link.folderId) ? link.folderId : firstFolderId,
   }));
 
-  return { folders, links };
+  const trashedFolders = (stored.trashedFolders ?? []).filter(
+    (folder) => !folderIds.has(folder.id),
+  );
+  const trashedLinks = (stored.trashedLinks ?? []).filter(
+    (link) => !links.some((item) => item.id === link.id),
+  );
+
+  return { folders, links, trashedFolders, trashedLinks };
 };
 
 const migrateLegacyLinks = (legacyLinks: LegacyLink[]): LauncherData => {
@@ -63,12 +71,22 @@ const migrateLegacyLinks = (legacyLinks: LegacyLink[]): LauncherData => {
     badge: item.badge,
   }));
 
-  return mergeLauncherData({ folders: DEFAULT_FOLDERS, links });
+  return mergeLauncherData({
+    folders: DEFAULT_FOLDERS,
+    links,
+    trashedFolders: [],
+    trashedLinks: [],
+  });
 };
 
 export const loadLauncherData = (): LauncherData => {
   if (typeof window === "undefined") {
-    return { folders: DEFAULT_FOLDERS, links: DEFAULT_LINKS };
+    return {
+      folders: DEFAULT_FOLDERS,
+      links: DEFAULT_LINKS,
+      trashedFolders: [],
+      trashedLinks: [],
+    };
   }
 
   const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -91,12 +109,26 @@ export const loadLauncherData = (): LauncherData => {
         Array.isArray((parsed as LauncherData).folders) &&
         Array.isArray((parsed as LauncherData).links)
       ) {
-        currentData = mergeLauncherData(parsed as LauncherData);
+        currentData = mergeLauncherData({
+          ...(parsed as LauncherData),
+          trashedFolders: (parsed as LauncherData).trashedFolders ?? [],
+          trashedLinks: (parsed as LauncherData).trashedLinks ?? [],
+        });
       } else {
-        currentData = { folders: DEFAULT_FOLDERS, links: DEFAULT_LINKS };
+        currentData = {
+          folders: DEFAULT_FOLDERS,
+          links: DEFAULT_LINKS,
+          trashedFolders: [],
+          trashedLinks: [],
+        };
       }
     } catch {
-      currentData = { folders: DEFAULT_FOLDERS, links: DEFAULT_LINKS };
+      currentData = {
+        folders: DEFAULT_FOLDERS,
+        links: DEFAULT_LINKS,
+        trashedFolders: [],
+        trashedLinks: [],
+      };
     }
   }
 
@@ -105,6 +137,8 @@ export const loadLauncherData = (): LauncherData => {
     currentData = mergeLauncherData({
       folders: [...currentData.folders, ...IMPORTED_FOLDERS],
       links: [...currentData.links, ...IMPORTED_LINKS],
+      trashedFolders: currentData.trashedFolders ?? [],
+      trashedLinks: currentData.trashedLinks ?? [],
     });
     window.localStorage.setItem(BOOKMARKS_IMPORTED_KEY, "true");
     saveLauncherData(currentData);

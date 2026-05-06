@@ -31,13 +31,25 @@ type LinkCardProps = {
   onRemove: () => void;
 };
 
-export const LinkCard = ({ link, folderPath, onFavorite, onEdit, onRemove }: LinkCardProps) => {
+export const LinkCard = ({
+  link,
+  folderPath,
+  onFavorite,
+  onEdit,
+  onRemove,
+}: LinkCardProps) => {
   const [imgError, setImgError] = useState(false);
 
   return (
     <article
       className="group cursor-pointer rounded-xl border border-slate-800 bg-slate-900/60 p-4 transition hover:border-slate-600 hover:bg-slate-900"
       onClick={() => openExternal(link.url)}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("type", "link");
+        e.dataTransfer.setData("id", link.id);
+        e.dataTransfer.effectAllowed = "move";
+      }}
     >
       <div className="flex items-start gap-3">
         <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
@@ -67,7 +79,9 @@ export const LinkCard = ({ link, folderPath, onFavorite, onEdit, onRemove }: Lin
               </span>
             )}
           </div>
-          <p className="mt-0.5 truncate text-xs text-slate-500">{getHostname(link.url)}</p>
+          <p className="mt-0.5 truncate text-xs text-slate-500">
+            {getHostname(link.url)}
+          </p>
         </div>
 
         <button
@@ -88,7 +102,9 @@ export const LinkCard = ({ link, folderPath, onFavorite, onEdit, onRemove }: Lin
       </div>
 
       <div className="mt-2 flex items-center justify-between gap-2">
-        <span className="truncate text-[11px] text-slate-600">{folderPath}</span>
+        <span className="truncate text-[11px] text-slate-600">
+          {folderPath}
+        </span>
 
         <div className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
           <button

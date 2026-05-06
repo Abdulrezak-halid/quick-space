@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
 import { Download, Plus, Search, Star, Upload } from "lucide-react";
 import { EditLinkForm } from "./components/EditLinkForm";
 import { FolderSidebar } from "./components/FolderSidebar";
@@ -7,7 +13,13 @@ import { useDebouncedValue } from "./hooks/useDebouncedValue";
 import { useKeyboardShortcut } from "./hooks/useKeyboardShortcut";
 import { useLauncherTree } from "./hooks/useLauncherTree";
 import { loadLauncherData, saveLauncherData } from "./storage/linkStorage";
-import type { Folder, LauncherData, LinkItem } from "./types/link";
+import type {
+  Folder,
+  LauncherData,
+  LinkItem,
+  TrashedFolder,
+  TrashedLink,
+} from "./types/link";
 
 const normalizeUrl = (url: string): string => {
   const cleaned = url.trim();
@@ -24,7 +36,10 @@ const normalizeUrl = (url: string): string => {
 };
 
 const createId = (): string => {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
     return crypto.randomUUID();
   }
 
@@ -36,12 +51,30 @@ const isValidLauncherData = (value: unknown): value is LauncherData => {
     return false;
   }
 
-  const parsed = value as { folders?: unknown; links?: unknown };
-  return Array.isArray(parsed.folders) && Array.isArray(parsed.links);
+  const parsed = value as {
+    folders?: unknown;
+    links?: unknown;
+    trashedFolders?: unknown;
+    trashedLinks?: unknown;
+  };
+
+  const trashFoldersValid =
+    parsed.trashedFolders === undefined || Array.isArray(parsed.trashedFolders);
+  const trashLinksValid =
+    parsed.trashedLinks === undefined || Array.isArray(parsed.trashedLinks);
+
+  return (
+    Array.isArray(parsed.folders) &&
+    Array.isArray(parsed.links) &&
+    trashFoldersValid &&
+    trashLinksValid
+  );
 };
 
 function App() {
-  const [launcher, setLauncher] = useState<LauncherData>(() => loadLauncherData());
+  const [launcher, setLauncher] = useState<LauncherData>(() =>
+    loadLauncherData(),
+  );
   const [query, setQuery] = useState("");
   const [activeFolder, setActiveFolder] = useState<string>("all");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
@@ -53,7 +86,9 @@ function App() {
   const [newLinkTitle, setNewLinkTitle] = useState("");
   const [newLinkUrl, setNewLinkUrl] = useState("");
   const [newLinkBadge, setNewLinkBadge] = useState("");
-  const [newLinkFolderId, setNewLinkFolderId] = useState(launcher.folders[0]?.id ?? "");
+  const [newLinkFolderId, setNewLinkFolderId] = useState(
+    launcher.folders[0]?.id ?? "",
+  );
 
   const [editingFolderId, setEditingFolderId] = useState<string | null>(null);
   const [editFolderName, setEditFolderName] = useState("");
@@ -78,6 +113,9 @@ function App() {
     saveLauncherData(launcher);
   }, [launcher]);
 
+  const isTrashView = activeFolder === "trash";
+  const treeActiveFolder = isTrashView ? "all" : activeFolder;
+
   const {
     folderMap,
     folderChildrenMap,
@@ -86,7 +124,32 @@ function App() {
     linksByFolder,
     filteredLinks,
     activeFolderName,
-  } = useLauncherTree(launcher, debouncedQuery, activeFolder, favoritesOnly);
+  } = useLauncherTree(
+    launcher,
+    debouncedQuery,
+    treeActiveFolder,
+    favoritesOnly,
+  );
+
+  const trashFolderCount = launcher.trashedFolders.length;
+  const trashLinkCount = launcher.trashedLinks.length;
+  const trashCount = trashFolderCount + trashLinkCount;
+
+  const normalizedTrashQuery = debouncedQuery.trim().toLowerCase();
+  const trashedFoldersFiltered = launcher.trashedFolders.filter((folder) =>
+    normalizedTrashQuery.length === 0
+      ? true
+      : folder.name.toLowerCase().includes(normalizedTrashQuery),
+  );
+  const trashedLinksFiltered = launcher.trashedLinks.filter((link) => {
+    if (normalizedTrashQuery.length === 0) {
+      return true;
+    }
+
+    const haystack =
+      `${link.title} ${link.badge ?? ""} ${link.url}`.toLowerCase();
+    return haystack.includes(normalizedTrashQuery);
+  });
 
   const addFolder = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -96,10 +159,18 @@ function App() {
       return;
     }
 
+    const parentId = newFolderParentId || undefined;
+    const siblingOrders = launcher.folders
+      .filter((folder) => folder.parentId === parentId)
+      .map((folder) => folder.order ?? folder.createdAt);
+    const nextOrder =
+      siblingOrders.length > 0 ? Math.max(...siblingOrders) + 1 : 0;
+
     const folder: Folder = {
       id: createId(),
       name,
-      parentId: newFolderParentId || undefined,
+      parentId,
+      order: nextOrder,
       createdAt: Date.now(),
     };
 
@@ -141,7 +212,9 @@ function App() {
 
     const collectDescendants = (folderId: string): void => {
       descendantIds.add(folderId);
-      (folderChildrenMap.get(folderId) ?? []).forEach((child) => collectDescendants(child.id));
+      (folderChildrenMap.get(folderId) ?? []).forEach((child) =>
+        collectDescendants(child.id),
+      );
     };
 
     collectDescendants(editingFolderId);
@@ -163,6 +236,123 @@ function App() {
     setEditingFolderId(null);
   };
 
+  type FolderDropPosition = "before" | "after" | "inside";
+
+  const moveFolder = (
+    folderId: string,
+    newParentId: string | undefined,
+    anchorId?: string,
+    position: FolderDropPosition = "inside",
+  ): void => {
+    if (folderId === newParentId) {
+      return;
+    }
+
+    const descendantIds = new Set<string>();
+    const collectDescendants = (id: string): void => {
+      descendantIds.add(id);
+      (folderChildrenMap.get(id) ?? []).forEach((child) =>
+        collectDescendants(child.id),
+      );
+    };
+
+    collectDescendants(folderId);
+
+    if (newParentId && descendantIds.has(newParentId)) {
+      alert("Cannot move a folder inside itself or its descendants.");
+      return;
+    }
+
+    setLauncher((current) => {
+      const movingFolder = current.folders.find(
+        (folder) => folder.id === folderId,
+      );
+      if (!movingFolder) {
+        return current;
+      }
+
+      const sortByOrder = (a: Folder, b: Folder): number => {
+        const orderA = a.order ?? a.createdAt;
+        const orderB = b.order ?? b.createdAt;
+        return orderA - orderB || a.name.localeCompare(b.name);
+      };
+
+      const oldParentId = movingFolder.parentId;
+      const targetParentId = newParentId;
+
+      const siblingCandidates = current.folders
+        .filter(
+          (folder) =>
+            folder.parentId === targetParentId && folder.id !== folderId,
+        )
+        .sort(sortByOrder);
+
+      let insertIndex = siblingCandidates.length;
+      if (anchorId) {
+        const targetIndex = siblingCandidates.findIndex(
+          (folder) => folder.id === anchorId,
+        );
+        if (targetIndex !== -1) {
+          insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+        }
+      }
+
+      const reordered = [...siblingCandidates];
+      reordered.splice(insertIndex, 0, {
+        ...movingFolder,
+        parentId: targetParentId,
+      });
+
+      const orderMap = new Map(
+        reordered.map((folder, index) => [folder.id, index]),
+      );
+      const oldSiblings = current.folders
+        .filter(
+          (folder) => folder.parentId === oldParentId && folder.id !== folderId,
+        )
+        .sort(sortByOrder);
+      const oldOrderMap = new Map(
+        oldSiblings.map((folder, index) => [folder.id, index]),
+      );
+
+      return {
+        ...current,
+        folders: current.folders.map((folder) => {
+          if (folder.id === folderId) {
+            return {
+              ...folder,
+              parentId: targetParentId,
+              order: orderMap.get(folderId),
+            };
+          }
+
+          if (folder.parentId === targetParentId && orderMap.has(folder.id)) {
+            return { ...folder, order: orderMap.get(folder.id) };
+          }
+
+          if (
+            oldParentId !== targetParentId &&
+            folder.parentId === oldParentId &&
+            oldOrderMap.has(folder.id)
+          ) {
+            return { ...folder, order: oldOrderMap.get(folder.id) };
+          }
+
+          return folder;
+        }),
+      };
+    });
+  };
+
+  const moveLink = (linkId: string, newFolderId: string): void => {
+    setLauncher((current) => ({
+      ...current,
+      links: current.links.map((link) =>
+        link.id === linkId ? { ...link, folderId: newFolderId } : link,
+      ),
+    }));
+  };
+
   const deleteFolder = (folderId: string): void => {
     const allIds = new Set<string>();
 
@@ -175,20 +365,33 @@ function App() {
 
     const folderName = folderMap.get(folderId)?.name ?? "this folder";
     const subfolderCount = allIds.size - 1;
-    const affectedLinks = launcher.links.filter((link) => allIds.has(link.folderId)).length;
+    const affectedLinks = launcher.links.filter((link) =>
+      allIds.has(link.folderId),
+    ).length;
 
     const confirmMessage =
       affectedLinks > 0
-        ? `Delete "${folderName}"${subfolderCount > 0 ? ` and ${subfolderCount} subfolder(s)` : ""}? This will also remove ${affectedLinks} link(s) inside. This cannot be undone.`
-        : `Delete "${folderName}"${subfolderCount > 0 ? ` and ${subfolderCount} subfolder(s)` : ""}? This cannot be undone.`;
+        ? `Move "${folderName}"${subfolderCount > 0 ? ` and ${subfolderCount} subfolder(s)` : ""} to Trash? This will also move ${affectedLinks} link(s) inside.`
+        : `Move "${folderName}"${subfolderCount > 0 ? ` and ${subfolderCount} subfolder(s)` : ""} to Trash?`;
 
     if (!window.confirm(confirmMessage)) {
       return;
     }
 
+    const deletedAt = Date.now();
+    const trashedFolders: TrashedFolder[] = launcher.folders
+      .filter((folder) => allIds.has(folder.id))
+      .map((folder) => ({ ...folder, deletedAt }));
+    const trashedLinks: TrashedLink[] = launcher.links
+      .filter((link) => allIds.has(link.folderId))
+      .map((link) => ({ ...link, deletedAt }));
+
     setLauncher((current) => ({
+      ...current,
       folders: current.folders.filter((folder) => !allIds.has(folder.id)),
       links: current.links.filter((link) => !allIds.has(link.folderId)),
+      trashedFolders: [...current.trashedFolders, ...trashedFolders],
+      trashedLinks: [...current.trashedLinks, ...trashedLinks],
     }));
 
     if (activeFolder === folderId || allIds.has(activeFolder)) {
@@ -229,10 +432,21 @@ function App() {
   };
 
   const removeLink = (id: string): void => {
-    setLauncher((current) => ({
-      ...current,
-      links: current.links.filter((link) => link.id !== id),
-    }));
+    setLauncher((current) => {
+      const link = current.links.find((item) => item.id === id);
+      if (!link) {
+        return current;
+      }
+
+      return {
+        ...current,
+        links: current.links.filter((item) => item.id !== id),
+        trashedLinks: [
+          ...current.trashedLinks,
+          { ...link, deletedAt: Date.now() },
+        ],
+      };
+    });
   };
 
   const toggleFavorite = (id: string): void => {
@@ -284,6 +498,124 @@ function App() {
     setEditingLinkId(null);
   };
 
+  const restoreFolderFromTrash = (folderId: string): void => {
+    setLauncher((current) => {
+      const trashedFolders = current.trashedFolders;
+      const trashedLinks = current.trashedLinks;
+      const restoreIds = new Set<string>();
+
+      const collect = (id: string): void => {
+        restoreIds.add(id);
+        trashedFolders
+          .filter((folder) => folder.parentId === id)
+          .forEach((folder) => collect(folder.id));
+      };
+
+      collect(folderId);
+
+      const folderIds = new Set(current.folders.map((folder) => folder.id));
+      const foldersToRestore = trashedFolders
+        .filter((folder) => restoreIds.has(folder.id))
+        .map((folder) => ({
+          ...folder,
+          parentId:
+            folder.parentId &&
+            (folderIds.has(folder.parentId) || restoreIds.has(folder.parentId))
+              ? folder.parentId
+              : undefined,
+          order: folder.order ?? folder.createdAt,
+        }));
+
+      const linksToRestore = trashedLinks.filter((link) =>
+        restoreIds.has(link.folderId),
+      );
+
+      return {
+        ...current,
+        folders: [...current.folders, ...foldersToRestore],
+        links: [...current.links, ...linksToRestore],
+        trashedFolders: trashedFolders.filter(
+          (folder) => !restoreIds.has(folder.id),
+        ),
+        trashedLinks: trashedLinks.filter(
+          (link) => !restoreIds.has(link.folderId),
+        ),
+      };
+    });
+  };
+
+  const restoreLinkFromTrash = (linkId: string): void => {
+    setLauncher((current) => {
+      const link = current.trashedLinks.find((item) => item.id === linkId);
+      if (!link) {
+        return current;
+      }
+
+      const fallbackFolderId = current.folders[0]?.id;
+      const targetFolderId = current.folders.some(
+        (folder) => folder.id === link.folderId,
+      )
+        ? link.folderId
+        : fallbackFolderId;
+
+      if (!targetFolderId) {
+        return current;
+      }
+
+      return {
+        ...current,
+        links: [{ ...link, folderId: targetFolderId }, ...current.links],
+        trashedLinks: current.trashedLinks.filter((item) => item.id !== linkId),
+      };
+    });
+  };
+
+  const deleteFolderFromTrash = (folderId: string): void => {
+    setLauncher((current) => {
+      const trashedFolders = current.trashedFolders;
+      const trashedLinks = current.trashedLinks;
+      const deleteIds = new Set<string>();
+
+      const collect = (id: string): void => {
+        deleteIds.add(id);
+        trashedFolders
+          .filter((folder) => folder.parentId === id)
+          .forEach((folder) => collect(folder.id));
+      };
+
+      collect(folderId);
+
+      return {
+        ...current,
+        trashedFolders: trashedFolders.filter(
+          (folder) => !deleteIds.has(folder.id),
+        ),
+        trashedLinks: trashedLinks.filter(
+          (link) => !deleteIds.has(link.folderId),
+        ),
+      };
+    });
+  };
+
+  const deleteLinkFromTrash = (linkId: string): void => {
+    setLauncher((current) => ({
+      ...current,
+      trashedLinks: current.trashedLinks.filter((item) => item.id !== linkId),
+    }));
+  };
+
+  const emptyTrash = (): void => {
+    if (!window.confirm("Permanently delete all items in Trash?")) {
+      return;
+    }
+
+    setLauncher((current) => ({
+      ...current,
+      trashedFolders: [],
+      trashedLinks: [],
+    }));
+  };
+
   const exportAsJson = (): void => {
     const fileName = `quickspace-export-${new Date().toISOString().slice(0, 10)}.json`;
     const content = JSON.stringify(launcher, null, 2);
@@ -304,7 +636,9 @@ function App() {
     importInputRef.current?.click();
   };
 
-  const importFromJson = async (event: ChangeEvent<HTMLInputElement>): Promise<void> => {
+  const importFromJson = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ): Promise<void> => {
     const file = event.target.files?.[0];
 
     if (!file) {
@@ -320,9 +654,15 @@ function App() {
         return;
       }
 
-      setLauncher(parsed);
+      const normalized: LauncherData = {
+        ...(parsed as LauncherData),
+        trashedFolders: (parsed as LauncherData).trashedFolders ?? [],
+        trashedLinks: (parsed as LauncherData).trashedLinks ?? [],
+      };
+
+      setLauncher(normalized);
       setActiveFolder("all");
-      setNewLinkFolderId(parsed.folders[0]?.id ?? "");
+      setNewLinkFolderId(normalized.folders[0]?.id ?? "");
       alert("Import completed successfully.");
     } catch {
       alert("Failed to import JSON file.");
@@ -335,10 +675,15 @@ function App() {
     <div className="flex min-h-screen flex-col bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-20 flex flex-col gap-3 border-b border-slate-800 bg-slate-950/90 px-4 py-3 backdrop-blur-md lg:flex-row lg:items-center">
         <div className="flex items-center gap-3">
-          <h1 className="text-sm font-semibold tracking-tight text-slate-100">QuickSpace</h1>
+          <h1 className="text-sm font-semibold tracking-tight text-slate-100">
+            QuickSpace
+          </h1>
           <span className="text-xs text-slate-500">
-            {filteredLinks.length} link{filteredLinks.length !== 1 ? "s" : ""}
-            {activeFolder !== "all" && ` in ${activeFolderName}`}
+            {isTrashView
+              ? `${trashLinkCount} link${trashLinkCount !== 1 ? "s" : ""} + ${trashFolderCount} folder${trashFolderCount !== 1 ? "s" : ""} in Trash`
+              : `${filteredLinks.length} link${filteredLinks.length !== 1 ? "s" : ""}${
+                  treeActiveFolder !== "all" ? ` in ${activeFolderName}` : ""
+                }`}
           </span>
         </div>
 
@@ -352,7 +697,11 @@ function App() {
             onKeyDown={(event) => {
               if (event.key === "Enter" && filteredLinks.length > 0) {
                 event.preventDefault();
-                window.open(filteredLinks[0].url, "_blank", "noopener,noreferrer");
+                window.open(
+                  filteredLinks[0].url,
+                  "_blank",
+                  "noopener,noreferrer",
+                );
               }
             }}
             placeholder="Search title, badge, or URL..."
@@ -421,7 +770,9 @@ function App() {
       {addPanelOpen && (
         <div className="border-b border-slate-800 bg-slate-900/80 px-4 py-4">
           <form className="mx-auto max-w-4xl space-y-3" onSubmit={addLink}>
-            <p className="text-xs font-medium uppercase tracking-wider text-slate-400">New link</p>
+            <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
+              New link
+            </p>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
               <input
                 autoFocus
@@ -458,7 +809,10 @@ function App() {
               </select>
             </div>
             <div className="flex gap-2">
-              <button type="submit" className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500">
+              <button
+                type="submit"
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-500"
+              >
                 Add link
               </button>
               <button
@@ -477,6 +831,9 @@ function App() {
         <FolderSidebar
           activeFolder={activeFolder}
           setActiveFolder={setActiveFolder}
+          isTrashActive={isTrashView}
+          trashCount={trashCount}
+          onSelectTrash={() => setActiveFolder("trash")}
           folderChildrenMap={folderChildrenMap}
           folderOptions={folderOptions}
           links={launcher.links}
@@ -495,10 +852,144 @@ function App() {
           cancelEditFolder={cancelEditFolder}
           startEditFolder={startEditFolder}
           deleteFolder={deleteFolder}
+          moveFolder={moveFolder}
+          moveLink={moveLink}
         />
 
         <main className="min-w-0 flex-1 overflow-y-auto p-4">
-          {filteredLinks.length > 0 ? (
+          {isTrashView ? (
+            <div className="space-y-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-slate-100">
+                    Trash
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Restore items or permanently delete them.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={emptyTrash}
+                  disabled={trashCount === 0}
+                  className="rounded-lg border border-rose-500/50 px-3 py-1.5 text-xs font-medium text-rose-200 transition hover:border-rose-400 hover:text-rose-100 disabled:cursor-not-allowed disabled:border-slate-800 disabled:text-slate-600"
+                >
+                  Empty trash
+                </button>
+              </div>
+
+              {trashCount === 0 ? (
+                <div className="flex h-56 flex-col items-center justify-center gap-3 text-center">
+                  <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-slate-700 bg-slate-800">
+                    <Search className="h-5 w-5 text-slate-500" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-400">
+                      Trash is empty
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      Deleted folders and links show up here.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <section className="space-y-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                      Folders
+                    </h3>
+                    {trashedFoldersFiltered.length > 0 ? (
+                      <div className="space-y-2">
+                        {trashedFoldersFiltered.map((folder) => (
+                          <div
+                            key={folder.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-slate-100">
+                                {folder.name}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                Deleted{" "}
+                                {new Date(folder.deletedAt).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  restoreFolderFromTrash(folder.id)
+                                }
+                                className="rounded-md border border-emerald-500/40 px-2.5 py-1 text-xs text-emerald-200 transition hover:border-emerald-400 hover:text-emerald-100"
+                              >
+                                Restore
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteFolderFromTrash(folder.id)}
+                                className="rounded-md border border-rose-500/40 px-2.5 py-1 text-xs text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-600">
+                        No folders match your search.
+                      </p>
+                    )}
+                  </section>
+
+                  <section className="space-y-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                      Links
+                    </h3>
+                    {trashedLinksFiltered.length > 0 ? (
+                      <div className="space-y-2">
+                        {trashedLinksFiltered.map((link) => (
+                          <div
+                            key={link.id}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/60 p-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-slate-100">
+                                {link.title}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {link.url}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => restoreLinkFromTrash(link.id)}
+                                className="rounded-md border border-emerald-500/40 px-2.5 py-1 text-xs text-emerald-200 transition hover:border-emerald-400 hover:text-emerald-100"
+                              >
+                                Restore
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => deleteLinkFromTrash(link.id)}
+                                className="rounded-md border border-rose-500/40 px-2.5 py-1 text-xs text-rose-200 transition hover:border-rose-400 hover:text-rose-100"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-xs text-slate-600">
+                        No links match your search.
+                      </p>
+                    )}
+                  </section>
+                </div>
+              )}
+            </div>
+          ) : filteredLinks.length > 0 ? (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {filteredLinks.map((link) =>
                 editingLinkId === link.id ? (
@@ -522,7 +1013,9 @@ function App() {
                   <LinkCard
                     key={link.id}
                     link={link}
-                    folderPath={folderPathById.get(link.folderId) ?? "Unknown folder"}
+                    folderPath={
+                      folderPathById.get(link.folderId) ?? "Unknown folder"
+                    }
                     onFavorite={() => toggleFavorite(link.id)}
                     onEdit={() => startEditLink(link)}
                     onRemove={() => removeLink(link.id)}
@@ -536,8 +1029,12 @@ function App() {
                 <Search className="h-5 w-5 text-slate-500" />
               </div>
               <div>
-                <p className="text-sm font-medium text-slate-400">No links found</p>
-                <p className="mt-1 text-xs text-slate-600">Try a different search or folder.</p>
+                <p className="text-sm font-medium text-slate-400">
+                  No links found
+                </p>
+                <p className="mt-1 text-xs text-slate-600">
+                  Try a different search or folder.
+                </p>
               </div>
               <button
                 type="button"

@@ -23,7 +23,13 @@ export const useLauncherTree = (
       children.set(folder.parentId, list);
     });
 
-    children.forEach((list) => list.sort((a, b) => a.name.localeCompare(b.name)));
+    children.forEach((list) =>
+      list.sort(
+        (a, b) =>
+          (a.order ?? a.createdAt) - (b.order ?? b.createdAt) ||
+          a.name.localeCompare(b.name),
+      ),
+    );
     return children;
   }, [launcher.folders]);
 
@@ -32,7 +38,10 @@ export const useLauncherTree = (
 
     const walk = (parentId: string | undefined, depth: number): void => {
       (folderChildrenMap.get(parentId) ?? []).forEach((folder) => {
-        options.push({ id: folder.id, label: `${"  ".repeat(depth)}${folder.name}` });
+        options.push({
+          id: folder.id,
+          label: `${"  ".repeat(depth)}${folder.name}`,
+        });
         walk(folder.id, depth + 1);
       });
     };
@@ -79,7 +88,9 @@ export const useLauncherTree = (
         return "Unknown";
       }
 
-      const path = folder.parentId ? `${getPath(folder.parentId)} / ${folder.name}` : folder.name;
+      const path = folder.parentId
+        ? `${getPath(folder.parentId)} / ${folder.name}`
+        : folder.name;
       pathMap.set(folderId, path);
       return path;
     };
@@ -97,7 +108,9 @@ export const useLauncherTree = (
 
     const walk = (folderId: string): void => {
       ids.add(folderId);
-      (folderChildrenMap.get(folderId) ?? []).forEach((folder) => walk(folder.id));
+      (folderChildrenMap.get(folderId) ?? []).forEach((folder) =>
+        walk(folder.id),
+      );
     };
 
     walk(activeFolder);
@@ -113,17 +126,26 @@ export const useLauncherTree = (
           `${link.title} ${link.badge ?? ""} ${link.url} ${link.description ?? ""}`,
         );
 
-        const folderMatch = activeFolderSet ? activeFolderSet.has(link.folderId) : true;
+        const folderMatch = activeFolderSet
+          ? activeFolderSet.has(link.folderId)
+          : true;
         const favoriteMatch = favoritesOnly ? link.favorite : true;
-        const searchMatch = normalizedQuery.length === 0 || searchText.includes(normalizedQuery);
+        const searchMatch =
+          normalizedQuery.length === 0 || searchText.includes(normalizedQuery);
 
         return folderMatch && favoriteMatch && searchMatch;
       })
-      .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.title.localeCompare(b.title));
+      .sort(
+        (a, b) =>
+          Number(b.favorite) - Number(a.favorite) ||
+          a.title.localeCompare(b.title),
+      );
   }, [activeFolderSet, debouncedQuery, favoritesOnly, launcher.links]);
 
   const activeFolderName =
-    activeFolder === "all" ? "All Links" : folderMap.get(activeFolder)?.name ?? "Links";
+    activeFolder === "all"
+      ? "All Links"
+      : (folderMap.get(activeFolder)?.name ?? "Links");
 
   return {
     folderMap,
