@@ -4,7 +4,7 @@ QuickSpace is a local-first bookmark launcher for organizing links into folders,
 
 ## Screenshot
 
-![QuickSpace interface](public/img.png)
+![QuickSpace interface](public/Screenshot.png)
 
 ## Features
 
