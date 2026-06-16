@@ -1,4 +1,4 @@
-# QuickSpace
+# Quick Space
 
 QuickSpace is a local-first bookmark launcher for organizing links into folders, editing entries quickly, and launching sites from a clean Chrome-style sidebar.
 
